@@ -1,5 +1,5 @@
 # main.py
-
+from server.distraction import router as distraction_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from attention.router import router as attention_router
@@ -13,7 +13,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(distraction_router, prefix="/distraction", tags=["Distraction"])
 app.include_router(attention_router, prefix="/attention", tags=["Attention"])
 
 @app.get("/")
