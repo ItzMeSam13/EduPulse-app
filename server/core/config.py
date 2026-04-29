@@ -38,3 +38,15 @@ class Config:
     # Dip Alert
     DIP_THRESHOLD = 60       # class score below 60 = dip
     DIP_DURATION = 10        # seconds below threshold before alert
+
+    #Distraction Thresholds
+    MAR_THRESHOLD = 0.6
+    YAWN_CONSEC_FRAMES = 20
+    SLEEP_CONSEC_FRAMES = 48
+
+    DISTRACTION_PENALTIES = {
+    "PHONE": 40,
+    "SLEEP": 35,
+    "SIDE_CONVO": 25,
+    "YAWN": 10,
+    }
