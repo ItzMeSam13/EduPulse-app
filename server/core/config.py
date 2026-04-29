@@ -1,36 +1,40 @@
 # core/config.py
 
-# MediaPipe settings
-MAX_FACES = 30
-DETECTION_CONFIDENCE = 0.5
-TRACKING_CONFIDENCE = 0.5
+class Config:
+    # Camera
+    CAMERA_INDEX = 0
+    FRAME_WIDTH = 640
+    FRAME_HEIGHT = 480
+    FPS_TARGET = 1  # 1 frame per second for processing
 
-# Head pose thresholds (degrees)
-YAW_THRESHOLD = 15        # head turned left/right
-PITCH_THRESHOLD = 10      # head tilted down/up
-ROLL_THRESHOLD = 20       # head tilted sideways
+    # MediaPipe
+    MIN_DETECTION_CONFIDENCE = 0.5
+    MIN_TRACKING_CONFIDENCE = 0.5
+    MAX_NUM_FACES = 10
 
-# Gaze thresholds
-GAZE_DEVIATION_THRESHOLD = 0.15   # iris deviation ratio
+    # Head Pose Thresholds
+    YAW_THRESHOLD = 15       # degrees left/right
+    PITCH_THRESHOLD = -10    # degrees down
+    ROLL_THRESHOLD = 20      # degrees tilt
 
-# Eye openness (EAR)
-EAR_THRESHOLD = 0.20              # below = eyes closed
-BLINK_FRAMES = 3                  # frames to ignore (normal blink)
-DROWSY_FRAMES = 10                # frames = drowsy (2 sec at 5fps)
+    # Gaze Thresholds
+    GAZE_THRESHOLD = 0.35    # iris off-center ratio
 
-# Smoothing
-SMOOTHING_FACTOR = 0.7            # higher = smoother but slower
-FRAMES_PER_SECOND = 5             # how many frames processed/sec
+    # Eye Openness (EAR)
+    EAR_THRESHOLD = 0.20     # below = eyes closing
+    BLINK_FRAMES = 3         # blinks under 3 frames = normal blink, ignore
+    DROWSY_FRAMES = 10       # eyes closed 10+ frames = drowsy
 
-# Engagement thresholds
-ATTENTIVE_THRESHOLD = 75          # score >= 75 = attentive
-MODERATE_THRESHOLD = 50           # score >= 50 = moderate
-DIP_THRESHOLD = 60                # below this = dip alert
-DIP_DURATION_SEC = 10             # seconds before alert triggers
-PEAK_THRESHOLD = 85               # score >= 85 = peak moment
+    # Scoring
+    HEAD_YAW_PENALTY = 25
+    HEAD_PITCH_PENALTY = 20
+    GAZE_PENALTY = 20
+    EAR_PENALTY = 20
 
-# Score deductions
-DEDUCTION_HEAD_YAW = 25
-DEDUCTION_HEAD_PITCH = 20
-DEDUCTION_GAZE_OFF = 20
-DEDUCTION_EYES_CLOSED = 20
+    # Smoothing
+    SMOOTH_ALPHA = 0.7       # weight for previous score
+    SMOOTH_WINDOW = 5        # rolling window size
+
+    # Dip Alert
+    DIP_THRESHOLD = 60       # class score below 60 = dip
+    DIP_DURATION = 10        # seconds below threshold before alert
