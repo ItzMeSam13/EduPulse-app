@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/utils/firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore";
 
 // ── Types ──────────────────────────────────────────────────────────
 interface Metrics {
@@ -266,8 +266,35 @@ export default function EduPulseDashboard() {
   const [connected, setConnected]   = useState(false);
   const [metrics, setMetrics]       = useState<Metrics | null>(null);
   const [history, setHistory]       = useState<HistoryPoint[]>([]);
+  const [fullSessionData, setFullSessionData] = useState<any[]>([]);
   const [elapsed, setElapsed]       = useState("00:00");
   const [sessionStart, setSessionStart] = useState<Date | null>(null);
+
+  const [subjectsList, setSubjectsList] = useState<string[]>([]);
+  const [selectedSubject, setSelectedSubject] = useState("");
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    (async () => {
+      try {
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          const sub = data.subjects;
+          if (typeof sub === "string") {
+            const list = sub.split(",").map((s: string) => s.trim()).filter(Boolean);
+            setSubjectsList(list);
+            if (list.length > 0) setSelectedSubject(list[0]);
+          } else if (Array.isArray(sub)) {
+            setSubjectsList(sub);
+            if (sub.length > 0) setSelectedSubject(sub[0]);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch subjects:", err);
+      }
+    })();
+  }, [user?.uid]);
 
   const [copilotOpen, setCopilotOpen]     = useState(false);
   const [copilotMsgs, setCopilotMsgs]     = useState<CopilotMsg[]>([
@@ -413,6 +440,16 @@ export default function EduPulseDashboard() {
         setHistory(prev => {
           const d = new Date(data.timestamp * 1000);
           const t = `${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
+          
+          setFullSessionData(full => [...full, {
+            time: t,
+            score: data.class_score,
+            sleeping: data.sleeping > 0,
+            yawning: data.yawning > 0,
+            phone_detected: data.phone_detected,
+            side_convo: data.side_convo
+          }]);
+
           return [...prev, {
             t, score: data.class_score, attentive: data.attentive,
             distracted: data.distracted, sleeping: data.sleeping, yawning: data.yawning
@@ -424,12 +461,16 @@ export default function EduPulseDashboard() {
 
   // ── Session control ────────────────────────────────────────────────
   const handleStart = async () => {
+    if (!selectedSubject) {
+      alert("Please select a subject before starting the session.");
+      return;
+    }
     try {
       const res  = await fetch(`${API}/session/start?source=${source}`, { method: "POST" });
       const data = await res.json();
       if (data.status === "started" || data.status === "already_running") {
         setRunning(true); setSessionStart(new Date());
-        setHistory([]); setMetrics(null); setElapsed("00:00");
+        setHistory([]); setFullSessionData([]); setMetrics(null); setElapsed("00:00");
         lowSinceRef.current = null;
         Object.keys(lastAlertRef.current).forEach(k => delete lastAlertRef.current[k]);
         connectWS();
@@ -446,7 +487,7 @@ export default function EduPulseDashboard() {
   };
 
   const handleStop = async () => {
-    try { await fetch(`${API}/session/stop`, { method: "POST" }); } catch {}
+    fetch(`${API}/session/stop`, { method: "POST" }).catch(e => console.error("Stop API error:", e));
     setRunning(false);
     wsRef.current?.close();
     setConnected(false);
@@ -464,7 +505,7 @@ export default function EduPulseDashboard() {
       
       await addDoc(collection(db, "sessions"), {
         teacher_uid: user?.uid ?? "UNKNOWN",
-        subject: "General",
+        subject: selectedSubject || "General",
         date: serverTimestamp(),
         duration_minutes: Math.round(duration_minutes * 10) / 10,
         average_score: avgScore,
@@ -477,11 +518,14 @@ export default function EduPulseDashboard() {
           side_convo: metrics?.side_convo ? 1 : 0,
         },
         attention_timeline: scoreHistory,
+        full_timeline: fullSessionData,
       });
 
       router.push("/dashboard");
-    } catch (err) {
+    } catch (err: any) {
       console.error("Firebase save error:", err);
+      alert("Failed to save to Firebase! Please update your Firebase Database Rules to allow read/write. Error: " + err.message);
+      router.push("/dashboard"); // Still redirect so they aren't stuck
     }
   };
 
@@ -674,10 +718,12 @@ export default function EduPulseDashboard() {
         <header style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "14px 32px",
+          paddingRight: copilotOpen ? 392 : 32,
           background: "#fff",
           borderBottom: "1px solid #e2e8f0",
           position: "sticky", top: 0, zIndex: 50,
-          boxShadow: "0 1px 8px rgba(0,0,0,0.04)"
+          boxShadow: "0 1px 8px rgba(0,0,0,0.04)",
+          transition: "padding-right 0.3s cubic-bezier(.4,0,.2,1)"
         }}>
           {/* Logo */}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -793,12 +839,51 @@ export default function EduPulseDashboard() {
                     color: "#0f172a", fontWeight: 400, marginBottom: 8 }}>
                     Ready to Monitor
                   </h2>
-                  <p style={{ color: "#64748b", fontSize: 14, fontFamily: "'DM Sans',sans-serif" }}>
-                    Select your source, then press Start Session
+                  <p style={{ color: "#64748b", fontSize: 14, fontFamily: "'DM Sans',sans-serif", marginBottom: 32 }}>
+                    Select your class subject and source, then press Start
                   </p>
                 </div>
 
-                <div style={{ display: "flex", gap: 20 }}>
+                {/* Subject Selection */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 360 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#1e293b", textAlign: "left", paddingLeft: 4 }}>
+                    Subject <span style={{ color: "#ef4444" }}>*</span>
+                  </label>
+                  <select
+                    value={selectedSubject}
+                    onChange={(e) => setSelectedSubject(e.target.value)}
+                    style={{
+                      padding: "12px 16px",
+                      borderRadius: 12,
+                      border: "1px solid #cbd5e1",
+                      background: "#fff",
+                      fontSize: 14,
+                      color: "#0f172a",
+                      outline: "none",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                      cursor: "pointer",
+                      width: "100%",
+                      WebkitAppearance: "none",
+                      appearance: "none",
+                      backgroundImage: "url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2394a3b8%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E')",
+                      backgroundRepeat: "no-repeat",
+                      backgroundPosition: "right 12px center",
+                      backgroundSize: "16px"
+                    }}
+                  >
+                    <option value="" disabled>Select a subject...</option>
+                    {subjectsList.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                  {subjectsList.length === 0 && (
+                    <p style={{ fontSize: 11, color: "#94a3b8", textAlign: "left", margin: "4px 0 0 4px" }}>
+                      No subjects found in your profile. You can still type one manually if needed.
+                    </p>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 20, marginTop: 12 }}>
                   {[
                     { icon: "🎬", title: "Video File", desc: "Analyse classvideo.mp4", key: "video" as const },
                     { icon: "📷", title: "Webcam", desc: "Monitor live camera feed", key: "webcam" as const },
@@ -819,8 +904,17 @@ export default function EduPulseDashboard() {
                   ))}
                 </div>
 
-                <button className="btn-primary" onClick={handleStart}
-                  style={{ padding: "13px 36px", fontSize: 14 }}>
+                <button 
+                  className="btn-primary" 
+                  onClick={handleStart}
+                  disabled={!selectedSubject}
+                  style={{ 
+                    padding: "13px 36px", 
+                    fontSize: 14,
+                    opacity: selectedSubject ? 1 : 0.6,
+                    cursor: selectedSubject ? "pointer" : "not-allowed"
+                  }}
+                >
                   ▶ Start Session
                 </button>
               </div>

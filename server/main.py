@@ -62,10 +62,8 @@ def start_session(source: str = Query(default="video")):
 @app.post("/session/stop")
 def stop_session():
     global _active_engine
-    if _active_engine == "video":
-        engine.stop()
-    elif _active_engine == "webcam":
-        engine_webcam.stop()
+    engine.stop()
+    engine_webcam.stop()
     _active_engine = None
     return {"status": "stopped"}
 

@@ -328,6 +328,8 @@ def _run():
 
     cap.release()
     cv2.destroyAllWindows()
+    for _ in range(4):
+        cv2.waitKey(1)
     face_mesh.close()
     print("Engine stopped.")
 

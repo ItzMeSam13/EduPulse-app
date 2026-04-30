@@ -95,6 +95,9 @@ async def get_live_alert(trigger: str, session_snapshot: dict, trigger_data: dic
 
     messages = [HumanMessage(content=f"{system}\n\nSITUATION: {prompt}")]
 
-    async for chunk in llm.astream(messages):
-        if chunk.content:
-            yield chunk.content
+    try:
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                yield chunk.content
+    except Exception as e:
+        yield f"Error generating alert: {str(e)[:50]}... Please check your API quota."
