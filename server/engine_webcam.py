@@ -1,7 +1,5 @@
 # engine_webcam.py — Webcam version of engine.py
-# All detection logic identical to test_attention.py
-# Wrapped for FastAPI: queue + thread + stop flag
-# Frontend calls POST /session/start?source=webcam to use this
+# Fixed: frame skipping, lower resolution, YOLO throttled, no GUI freeze
 
 import cv2
 import time
@@ -107,6 +105,7 @@ except ImportError:
 
 # ── Core Engine Loop ───────────────────────────────────────────────
 def run_engine():
+    # ── FIX 1: Load YOLO with smaller model ──────────────────────
     yolo = YOLO("yolov8n.pt")
 
     face_mesh = mp_face_mesh.FaceMesh(
@@ -116,21 +115,24 @@ def run_engine():
         min_tracking_confidence=0.2
     )
 
-    # ── Webcam ────────────────────────────────────────────────────
+    # ── FIX 2: Lower resolution — 640x480 instead of 1280x720 ────
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)          # cap at 15fps — reduces CPU load
 
     if not cap.isOpened():
         print("[engine_webcam] ERROR: Cannot open webcam.")
         return
 
-    cv2.namedWindow("EduPulse - Webcam Attention", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("EduPulse - Webcam Attention", 1280, 720)
+    # ── FIX 3: Use WINDOW_AUTOSIZE to avoid GUI blocking ─────────
+    cv2.namedWindow("EduPulse - Webcam Attention", cv2.WINDOW_AUTOSIZE)
 
-    history            = {}
-    frame_count        = 0
-    distraction_result = None
+    history             = {}
+    frame_count         = 0
+    distraction_result  = None
+    last_boxes          = []          # cache last YOLO result
+    last_display_frame  = None        # cache last fully-drawn frame
     _stop_flag.clear()
 
     print("[engine_webcam] Webcam started. Press Q to quit.")
@@ -138,15 +140,24 @@ def run_engine():
     while not _stop_flag.is_set():
         ret, frame = cap.read()
         if not ret:
-            time.sleep(0.1)
+            time.sleep(0.05)
             continue
 
-        frame          = cv2.resize(frame, (1280, 720))
+        # ── FIX 4: Resize to fixed working size ───────────────────
+        frame = cv2.resize(frame, (640, 480))
         h_full, w_full = frame.shape[:2]
-        frame_count   += 1
+        frame_count += 1
 
-        # ── DistractionScorer every 3 frames ──────────────────────
-        if USE_SCORER and frame_count % 3 == 0:
+        # ── Skip frames — show last drawn frame so overlays don't flash
+        if frame_count % 2 != 0:
+            display = last_display_frame if last_display_frame is not None else frame
+            cv2.imshow("EduPulse - Webcam Attention", display)
+            if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
+                break
+            continue
+
+        # ── DistractionScorer every 6 frames (was every 3) ────────
+        if USE_SCORER and frame_count % 6 == 0:
             try:
                 rgb_full           = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 distraction_result = scorer.score(rgb_full)
@@ -156,9 +167,11 @@ def run_engine():
         phone_detected = distraction_result.metrics.phone_detected      if distraction_result and USE_SCORER else False
         side_detected  = distraction_result.metrics.side_convo_detected if distraction_result and USE_SCORER else False
 
-        # ── YOLO Person Detection ──────────────────────────────────
-        yolo_results     = yolo(frame, classes=[0], verbose=False, conf=0.15, iou=0.35)
-        boxes            = yolo_results[0].boxes
+        # ── FIX 6: YOLO only every 6 frames, reuse cached boxes ───
+        if frame_count % 6 == 0:
+            yolo_results = yolo(frame, classes=[0], verbose=False, conf=0.15, iou=0.35)
+            last_boxes   = yolo_results[0].boxes
+        boxes = last_boxes
 
         class_scores     = []
         attentive_count  = 0
@@ -188,8 +201,8 @@ def run_engine():
             if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
                 continue
 
-            # 3x upscale for MediaPipe
-            crop_big = cv2.resize(crop, (crop.shape[1]*3, crop.shape[0]*3))
+            # ── FIX 7: 2x upscale instead of 3x — saves a lot ────
+            crop_big = cv2.resize(crop, (crop.shape[1]*2, crop.shape[0]*2))
             ch, cw   = crop_big.shape[:2]
 
             rgb_crop = cv2.cvtColor(crop_big, cv2.COLOR_BGR2RGB)
@@ -239,11 +252,11 @@ def run_engine():
 
             class_scores.append(score)
 
-            if is_sleeping:          sleeping_count  += 1
-            elif is_yawning:         yawning_count   += 1
-            elif score >= 75:        attentive_count  += 1
-            elif state == "Head Down": headdown_count += 1
-            else:                    distracted_count += 1
+            if is_sleeping:            sleeping_count  += 1
+            elif is_yawning:           yawning_count   += 1
+            elif score >= 75:          attentive_count  += 1
+            elif state == "Head Down": headdown_count   += 1
+            else:                      distracted_count += 1
 
             # Draw box
             cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
@@ -259,31 +272,31 @@ def run_engine():
             cls_color = (0,255,0) if cls>=75 else (0,255,255) if cls>=50 else (0,0,255)
             cls_state = "Good"    if cls>=75 else "Moderate"  if cls>=50 else "Low"
 
-            cv2.rectangle(frame, (0,0), (320,175), (0,0,0), -1)
-            cv2.rectangle(frame, (0,0), (320,175), cls_color, 2)
+            cv2.rectangle(frame, (0,0), (280,155), (0,0,0), -1)
+            cv2.rectangle(frame, (0,0), (280,155), cls_color, 2)
             cv2.putText(frame, f"Class: {cls}% {cls_state}",
-                        (10,32),  cv2.FONT_HERSHEY_SIMPLEX, 0.85, cls_color, 2)
+                        (10,28),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, cls_color, 2)
             cv2.putText(frame, f"Students:   {len(class_scores)}",
-                        (10,62),  cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255,255,255), 1)
+                        (10,52),  cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255,255,255), 1)
             cv2.putText(frame, f"Attentive:  {attentive_count}",
-                        (10,86),  cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0,255,0), 1)
+                        (10,72),  cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0,255,0), 1)
             cv2.putText(frame, f"Distracted: {distracted_count}",
-                        (10,110), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0,165,255), 1)
+                        (10,92),  cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0,165,255), 1)
             cv2.putText(frame, f"Head Down:  {headdown_count}",
-                        (10,134), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0,100,255), 1)
+                        (10,112), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0,100,255), 1)
             cv2.putText(frame, f"Sleeping:   {sleeping_count}",
-                        (10,158), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0,0,255), 1)
+                        (10,132), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0,0,255), 1)
 
             true_distraction = 100 - cls
             d_color = (0,0,255) if true_distraction > 50 else (0,255,0)
-            cv2.rectangle(frame, (0, h_full-85), (360, h_full), (0,0,0), -1)
-            cv2.rectangle(frame, (0, h_full-85), (360, h_full), d_color, 2)
+            cv2.rectangle(frame, (0, h_full-70), (320, h_full), (0,0,0), -1)
+            cv2.rectangle(frame, (0, h_full-70), (320, h_full), d_color, 2)
             cv2.putText(frame, f"Distraction: {true_distraction}%",
-                        (8, h_full-62), cv2.FONT_HERSHEY_SIMPLEX, 0.62, d_color, 2)
-            cv2.putText(frame, f"Yawning: {yawning_count}  |  Sleeping: {sleeping_count}",
-                        (8, h_full-38), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255,255,255), 1)
-            cv2.putText(frame, f"Phone: {phone_detected}  |  Side Convo: {side_detected}",
-                        (8, h_full-14), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255,255,255), 1)
+                        (8, h_full-50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 2)
+            cv2.putText(frame, f"Yawning:{yawning_count}  Sleeping:{sleeping_count}",
+                        (8, h_full-30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
+            cv2.putText(frame, f"Phone:{phone_detected}  Side:{side_detected}",
+                        (8, h_full-10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
 
             # ── Push to queue ─────────────────────────────────────
             try:
@@ -304,18 +317,21 @@ def run_engine():
             except queue.Full:
                 pass
 
-            if frame_count % 3 == 0:
+            if frame_count % 6 == 0:
                 print(f"[webcam] Score:{cls}% | "
                       f"Sleep:{sleeping_count>0} | Yawn:{yawning_count>0} | "
                       f"Phone:{phone_detected} | Side:{side_detected}")
 
         else:
-            cv2.rectangle(frame, (0,0), (260,45), (0,0,0), -1)
+            cv2.rectangle(frame, (0,0), (220,38), (0,0,0), -1)
             cv2.putText(frame, "No students detected",
-                        (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                        (8,26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
+        last_display_frame = frame.copy()   # cache fully drawn frame
         cv2.imshow("EduPulse - Webcam Attention", frame)
-        key = cv2.waitKey(30) & 0xFF
+
+        # ── FIX 8: waitKey(1) not (30) — keeps window responsive ─
+        key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == 27:
             break
 
@@ -338,4 +354,4 @@ def stop():
     print("[engine_webcam] Stop signal sent.")
 
 def is_running():
-    return _thread is not None and _thread.is_alive()   
+    return _thread is not None and _thread.is_alive()
